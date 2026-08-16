@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.session
+*.session-journal
+.env
+cookies.txt
+tiktok_cookies.txt
+downloads/
