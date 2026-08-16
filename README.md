@@ -20,7 +20,7 @@ The bot can use `cookies.txt` for Instagram and `tiktok_cookies.txt` for TikTok.
 
 ```bash
 pip install -r requirements.txt
-python mtproto.py
+python bot.py
 ```
 
 FFmpeg is also required by the bot for MP3 conversion.
