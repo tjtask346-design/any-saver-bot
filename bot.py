@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import requests
@@ -21,13 +22,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DOWNLOAD_DIR = "downloads"
 MAX_FILE_SIZE = None
 
+# Only Instagram authentication cookie is maintained
 INSTAGRAM_COOKIE_FILE = os.path.expanduser(
     os.getenv("INSTAGRAM_COOKIE_FILE", "cookies.txt")
 )
-TIKTOK_COOKIE_FILE = os.path.expanduser(
-    os.getenv("TIKTOK_COOKIE_FILE", "tiktok_cookies.txt")
-)
 
+# TikWM API endpoint for handling all TikTok links
 TIKWM_API_URL = "https://www.tikwm.com/api/"
 TIKWM_TIMEOUT = 30
 
@@ -66,7 +66,7 @@ def create_progress_bar(percentage):
 
 
 # =========================
-# PLATFORM / FALLBACK HELPERS
+# PLATFORM HELPERS & TIKWM INTEGRATION
 # =========================
 
 
@@ -86,27 +86,15 @@ def detect_platform(url):
 def build_ydl_options(base_opts, platform):
   opts = dict(base_opts)
 
+  # Cookie is only attached if platform is Instagram and file exists
   if platform == "instagram" and os.path.isfile(INSTAGRAM_COOKIE_FILE):
     opts["cookiefile"] = INSTAGRAM_COOKIE_FILE
-
-  elif platform == "tiktok":
-    if os.path.isfile(TIKTOK_COOKIE_FILE):
-      opts["cookiefile"] = TIKTOK_COOKIE_FILE
-
-    headers = dict(opts.get("http_headers") or {})
-    headers.setdefault(
-        "User-Agent",
-        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like"
-        " Gecko) Chrome/128.0 Mobile Safari/537.36",
-    )
-    headers.setdefault("Accept-Language", "en-US,en;q=0.9")
-    headers.setdefault("Referer", "https://www.tiktok.com/")
-    opts["http_headers"] = headers
 
   return opts
 
 
 def _tikwm_request(url, hd=1):
+  """Make an HTTP POST request to TikWM API."""
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like"
@@ -136,6 +124,7 @@ def _tikwm_request(url, hd=1):
 
 
 def tikwm_extract_info(url):
+  """Extract video metadata directly via TikWM."""
   data = _tikwm_request(url, hd=1)
 
   title = data.get("title") or data.get("desc") or "TikTok Video"
@@ -144,7 +133,7 @@ def tikwm_extract_info(url):
   )
 
   return {
-      "_fallback": "tikwm",
+      "_source": "tikwm",
       "id": str(data.get("id") or ""),
       "title": title,
       "thumbnail": thumbnail,
@@ -156,6 +145,7 @@ def tikwm_extract_info(url):
 
 
 def _pick_tikwm_video_url(data, format_type):
+  """Pick appropriate URL based on requested quality or format."""
   if format_type == "mp3":
     return data.get("music") or data.get("play") or data.get("hdplay")
 
@@ -174,6 +164,7 @@ def _safe_filename(name, fallback="TikTok"):
 
 
 def tikwm_download(url, task_dir, format_type, progress_hook=None):
+  """Download video or audio entirely using TikWM."""
   data = _tikwm_request(url, hd=1)
   media_url = _pick_tikwm_video_url(data, format_type)
 
@@ -183,12 +174,12 @@ def tikwm_download(url, task_dir, format_type, progress_hook=None):
   title = data.get("title") or data.get("desc") or "TikTok Video"
   safe_title = _safe_filename(title)
 
-  if format_type == "mp3":
-    source_path = os.path.join(task_dir, f"{safe_title}.mp4")
-    output_path = os.path.join(task_dir, f"{safe_title}.mp3")
-  else:
-    source_path = os.path.join(task_dir, f"{safe_title}.mp4")
-    output_path = source_path
+  source_path = os.path.join(task_dir, f"{safe_title}.mp4")
+  output_path = (
+      os.path.join(task_dir, f"{safe_title}.mp3")
+      if format_type == "mp3"
+      else source_path
+  )
 
   headers = {
       "User-Agent": (
@@ -244,7 +235,7 @@ def tikwm_download(url, task_dir, format_type, progress_hook=None):
       pass
 
   return {
-      "_fallback": "tikwm",
+      "_source": "tikwm",
       "title": title,
       "thumbnail": data.get("origin_cover") or data.get("cover"),
       "downloaded_file": output_path,
@@ -252,108 +243,33 @@ def tikwm_download(url, task_dir, format_type, progress_hook=None):
   }
 
 
-def extract_info_with_fallback(url, base_opts):
+def extract_info_handler(url, base_opts):
+  """Route TikTok links directly to TikWM, all other links to yt-dlp."""
   platform = detect_platform(url)
-  last_error = None
 
-  attempts = [build_ydl_options(base_opts, platform)]
-
-  retry = dict(base_opts)
-  retry["http_headers"] = {
-      "User-Agent": (
-          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like"
-          " Gecko) Chrome/128.0 Mobile Safari/537.36"
-      ),
-      "Accept-Language": "en-US,en;q=0.9",
-      "Referer": (
-          "https://www.tiktok.com/"
-          if platform == "tiktok"
-          else "https://www.instagram.com/"
-      ),
-  }
-  attempts.append(build_ydl_options(retry, platform))
-
-  for opts in attempts:
-    try:
-      with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
-    except Exception as e:
-      last_error = e
-
+  # TikTok bypassing yt-dlp completely
   if platform == "tiktok":
-    try:
-      return tikwm_extract_info(url)
-    except Exception as fallback_error:
-      raise Exception(
-          f"yt-dlp failed: {last_error}\nTikTok fallback failed:"
-          f" {fallback_error}"
-      )
+    return tikwm_extract_info(url)
 
-  raise (
-      last_error
-      if last_error
-      else Exception("Unable to extract media information.")
-  )
+  # All other platforms handled by yt-dlp
+  opts = build_ydl_options(base_opts, platform)
+  with yt_dlp.YoutubeDL(opts) as ydl:
+    return ydl.extract_info(url, download=False)
 
 
-def download_with_fallback(
-    url, ydl_opts, platform, task_dir=None, format_type=None
-):
-  last_error = None
-
-  attempts = [build_ydl_options(ydl_opts, platform)]
-
-  retry = dict(ydl_opts)
-  retry["http_headers"] = {
-      "User-Agent": (
-          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like"
-          " Gecko) Chrome/128.0 Mobile Safari/537.36"
-      ),
-      "Accept-Language": "en-US,en;q=0.9",
-      "Referer": (
-          "https://www.tiktok.com/"
-          if platform == "tiktok"
-          else "https://www.instagram.com/"
-      ),
-  }
-  attempts.append(build_ydl_options(retry, platform))
-
-  for opts in attempts:
-    try:
-      with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=True)
-    except Exception as e:
-      last_error = e
-
+def download_handler(url, ydl_opts, platform, task_dir=None, format_type=None, progress_hook=None):
+  """Route TikTok download requests directly to TikWM, others to yt-dlp."""
   if platform == "tiktok":
-    if not task_dir or not format_type:
-      raise Exception(
-          f"yt-dlp failed: {last_error}\n"
-          "TikTok fallback needs a download directory and format."
-      )
+    return tikwm_download(url, task_dir, format_type, progress_hook=progress_hook)
 
-    try:
-      return tikwm_download(
-          url,
-          task_dir,
-          format_type,
-      )
-    except Exception as fallback_error:
-      raise Exception(
-          f"yt-dlp failed: {last_error}\nTikTok fallback failed:"
-          f" {fallback_error}"
-      )
-
-  raise last_error if last_error else Exception("Download failed.")
+  opts = build_ydl_options(ydl_opts, platform)
+  with yt_dlp.YoutubeDL(opts) as ydl:
+    return ydl.extract_info(url, download=True)
 
 
 print(
     f"[Auth] Instagram cookies: "
     f"{'FOUND' if os.path.isfile(INSTAGRAM_COOKIE_FILE) else 'NOT FOUND'}"
-)
-print(
-    f"[Auth] TikTok cookies: "
-    f"{'FOUND' if os.path.isfile(TIKTOK_COOKIE_FILE) else 'NOT FOUND'}"
 )
 
 # =========================
@@ -414,7 +330,7 @@ async def handle_url(client, message):
 
   try:
     info = await asyncio.get_running_loop().run_in_executor(
-        executor, extract_info_with_fallback, url, ydl_opts
+        executor, extract_info_handler, url, ydl_opts
     )
     title = info.get("title", "Unknown Video")
     thumbnail = info.get("thumbnail")
@@ -548,7 +464,7 @@ async def process_download(client, message, url, format_type):
       pass
 
   def download_hook(d):
-    if d["status"] == "downloading":
+    if isinstance(d, dict) and d.get("status") == "downloading":
       total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
       downloaded_bytes = d.get("downloaded_bytes", 0)
 
@@ -565,6 +481,21 @@ async def process_download(client, message, url, format_type):
             safe_caption(status_text)
           except Exception:
             pass
+
+  def tikwm_progress(downloaded_bytes, total_bytes):
+    if total_bytes > 0:
+      percent = int((downloaded_bytes / total_bytes) * 100)
+      if percent >= last_update_data["last_percent"] + 10:
+        last_update_data["last_percent"] = (percent // 10) * 10
+        bar = create_progress_bar(percent)
+        status_text = (
+            "📥 <b>Downloading to Server...</b>\n\n"
+            f"<code>[{bar}]</code> <b>{percent}%</b>"
+        )
+        try:
+          safe_caption(status_text)
+        except Exception:
+          pass
 
   if format_type == "mp3":
     ydl_opts = {
@@ -597,12 +528,13 @@ async def process_download(client, message, url, format_type):
   try:
     info = await loop.run_in_executor(
         executor,
-        download_with_fallback,
+        download_handler,
         url,
         ydl_opts,
         platform,
         task_dir,
         format_type,
+        tikwm_progress,
     )
     title = info.get("title", "Media File")
 
@@ -712,8 +644,6 @@ async def process_download(client, message, url, format_type):
 # FLASK HEALTH SERVER (FOR RENDER)
 # =========================
 
-from flask import Flask
-
 web_app = Flask(__name__)
 
 
@@ -763,4 +693,3 @@ if __name__ == "__main__":
       else:
         print("Pyrogram error:", e)
       time.sleep(5)
-
