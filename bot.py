@@ -1,5 +1,4 @@
 # ── FIX: Python 3.14+ এ Pyrogram-এর event loop সমস্যা ──
-# এই তিনটি লাইন অবশ্যই pyrogram import করার আগে থাকতে হবে।
 import asyncio
 try:
     asyncio.get_event_loop()
@@ -14,6 +13,7 @@ import uuid
 import time
 import subprocess
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -27,12 +27,17 @@ import yt_dlp
 # CONFIG
 # =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-API_KEY = os.getenv("API_KEY", "change_this_secret")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+API_ID_STR = os.getenv("API_ID", "0").strip()
+API_HASH = os.getenv("API_HASH", "").strip()
+API_KEY = os.getenv("API_KEY", "change_this_secret").strip()
 PORT = int(os.getenv("PORT", 10000))
 DOWNLOAD_DIR = "downloads"
+
+try:
+    API_ID = int(API_ID_STR)
+except ValueError:
+    API_ID = 0
 
 INSTAGRAM_COOKIE_FILE = os.path.expanduser(os.getenv("INSTAGRAM_COOKIE_FILE", "cookies.txt"))
 TIKTOK_COOKIE_FILE = os.path.expanduser(os.getenv("TIKTOK_COOKIE_FILE", "~/tiktok_cookies.txt"))
@@ -40,6 +45,22 @@ TIKWM_API_URL = "https://www.tikwm.com/api/"
 TIKWM_TIMEOUT = 30
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# ── DIAGNOSTIC PRINTS ──
+print("=" * 60, flush=True)
+print("⚙️  [CONFIG DIAGNOSTIC]", flush=True)
+print(f"   API_ID present   : {bool(API_ID)}", flush=True)
+print(f"   API_ID length    : {len(str(API_ID)) if API_ID else 0}", flush=True)
+print(f"   API_ID value     : {API_ID if API_ID else 'EMPTY'}", flush=True)
+print(f"   API_HASH present : {bool(API_HASH)}", flush=True)
+print(f"   API_HASH length  : {len(API_HASH) if API_HASH else 0}", flush=True)
+print(f"   API_HASH prefix  : {API_HASH[:6] if API_HASH else 'EMPTY'}...", flush=True)
+print(f"   BOT_TOKEN present: {bool(BOT_TOKEN)}", flush=True)
+print(f"   BOT_TOKEN length : {len(BOT_TOKEN) if BOT_TOKEN else 0}", flush=True)
+print(f"   BOT_TOKEN prefix : {BOT_TOKEN[:12] if BOT_TOKEN else 'EMPTY'}", flush=True)
+print(f"   API_KEY present  : {bool(API_KEY)}", flush=True)
+print(f"   PORT             : {PORT}", flush=True)
+print("=" * 60, flush=True)
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
     raise RuntimeError("API_ID, API_HASH and BOT_TOKEN are required.")
@@ -758,34 +779,55 @@ async def process_download(client, message, url, format_type):
 def run_bot_thread():
     """Pyrogram চালাবে নিজের event loop-এ, background thread-এ।"""
     global bot_client, bot_loop
+
     while True:
         try:
+            print("=" * 60, flush=True)
+            print("🔄 [THREAD] Creating new event loop...", flush=True)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             bot_loop = loop
+            print("✅ [THREAD] Event loop created", flush=True)
 
+            print("🔄 [THREAD] Building Pyrogram client...", flush=True)
             bot_client = build_bot_client()
-            print("🤖 Starting Pyrogram bot...")
+            print("✅ [THREAD] Client object built", flush=True)
 
+            print("🔄 [THREAD] Calling bot_client.run()...", flush=True)
             bot_ready.set()
-            bot_client.run()  # blocking
+            print("✅ [THREAD] bot_ready set to True", flush=True)
+
+            bot_client.run()  # blocking — এখানে সফলভাবে চলতে থাকবে
+
+            print("⚠️ [THREAD] bot_client.run() returned (unexpected!)", flush=True)
             bot_ready.clear()
             break
+
         except Exception as e:
             bot_ready.clear()
-            print(f"Pyrogram error: {e}. Restarting in 5s...")
+            print("=" * 60, flush=True)
+            print("🔴 PYROGRAM FATAL ERROR:", flush=True)
+            print(f"   Type    : {type(e).__name__}", flush=True)
+            print(f"   Message : {e}", flush=True)
+            print("   Traceback:", flush=True)
+            traceback.print_exc()
+            print("=" * 60, flush=True)
+            print("⏳ Retrying in 5 seconds...", flush=True)
             time.sleep(5)
 
 
 def run_flask_thread():
     """Flask HTTP সার্ভার (Render-facing)।"""
-    print(f"🌐 Flask listening on 0.0.0.0:{PORT}")
+    print(f"🌐 Flask listening on 0.0.0.0:{PORT}", flush=True)
     flask_app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":
+    print("🚀 [MAIN] Starting bot.py...", flush=True)
+
     # বট background thread-এ
-    threading.Thread(target=run_bot_thread, daemon=True).start()
+    threading.Thread(target=run_bot_thread, daemon=True, name="PyrogramThread").start()
+    print("🚀 [MAIN] Pyrogram thread launched", flush=True)
 
     # Flask main thread-এ — Render-এর জন্য দ্রুত PORT bind করা দরকার
     run_flask_thread()
