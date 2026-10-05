@@ -1,6 +1,17 @@
 services:
-  - type: worker
-    name: any-sav-bot
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python mtproto.py
+  - type: web
+    name: anysav-mtproto-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
