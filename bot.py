@@ -1,9 +1,17 @@
+# ── FIX: Python 3.14+ এ Pyrogram-এর event loop সমস্যা ──
+# এই তিনটি লাইন অবশ্যই pyrogram import করার আগে থাকতে হবে।
+import asyncio
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+# ─────────────────────────────────────────────────────
+
 import os
 import glob
 import shutil
 import uuid
 import time
-import asyncio
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +30,7 @@ import yt_dlp
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
-API_KEY = os.getenv("API_KEY", "change_this_secret")   # external bot auth
+API_KEY = os.getenv("API_KEY", "change_this_secret")
 PORT = int(os.getenv("PORT", 10000))
 DOWNLOAD_DIR = "downloads"
 
@@ -50,7 +58,7 @@ flask_app = Flask(__name__)
 
 
 # =========================
-# HELPERS (unchanged logic)
+# HELPERS
 # =========================
 
 def create_progress_bar(percentage):
@@ -472,7 +480,7 @@ def _run_api_job(job_id, url, format_type, chat_id, callback_url):
             )
 
         future = asyncio.run_coroutine_threadsafe(_send(), bot_loop)
-        msg = future.result(timeout=900)  # 15 min upload timeout
+        msg = future.result(timeout=900)
         update(status="done", message_id=msg.id)
 
         if callback_url:
@@ -611,7 +619,7 @@ def build_bot_client():
 
 
 # =========================
-# DOWNLOAD PROCESSOR (same as original, uses client param)
+# DOWNLOAD PROCESSOR
 # =========================
 
 async def process_download(client, message, url, format_type):
@@ -748,7 +756,7 @@ async def process_download(client, message, url, format_type):
 # =========================
 
 def run_bot_thread():
-    """Run Pyrogram in its own asyncio loop, in a background thread."""
+    """Pyrogram চালাবে নিজের event loop-এ, background thread-এ।"""
     global bot_client, bot_loop
     while True:
         try:
@@ -759,9 +767,8 @@ def run_bot_thread():
             bot_client = build_bot_client()
             print("🤖 Starting Pyrogram bot...")
 
-            # Mark ready just before entering run loop
             bot_ready.set()
-            bot_client.run()  # blocking; runs forever
+            bot_client.run()  # blocking
             bot_ready.clear()
             break
         except Exception as e:
@@ -771,14 +778,14 @@ def run_bot_thread():
 
 
 def run_flask_thread():
-    """Run Flask HTTP server (Render-facing)."""
+    """Flask HTTP সার্ভার (Render-facing)।"""
     print(f"🌐 Flask listening on 0.0.0.0:{PORT}")
     flask_app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":
-    # Bot in background thread
+    # বট background thread-এ
     threading.Thread(target=run_bot_thread, daemon=True).start()
 
-    # Flask on main thread — Render needs this to bind $PORT quickly
+    # Flask main thread-এ — Render-এর জন্য দ্রুত PORT bind করা দরকার
     run_flask_thread()
